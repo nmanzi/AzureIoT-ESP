@@ -1,3 +1,7 @@
+// Todos:
+// - Read json data from the arduino via serial
+// - For each key/value from arduino, send telemetry
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
