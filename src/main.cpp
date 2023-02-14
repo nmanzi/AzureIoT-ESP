@@ -17,16 +17,19 @@
 #define MQTT_PACKET_SIZE 1024
 
 // Translate iot_configs.h defines into variables used by the sample
-static const char* ssid = IOT_CONFIG_WIFI_SSID;
-static const char* password = IOT_CONFIG_WIFI_PASSWORD;
-static const char* mqttHost = IOT_CONFIG_MQTT_SERVER;
-static const char* mqttUser = IOT_CONFIG_MQTT_USER;
-static const char* mqttPass = IOT_CONFIG_MQTT_PASS;
-static const char* mqttCid = IOT_CONFIG_MQTT_CLIENTID;
-static const char* sensorTopic = IOT_CONFIG_MQTT_SENSOR_TOPIC;
+static const char *ssid = IOT_CONFIG_WIFI_SSID;
+static const char *password = IOT_CONFIG_WIFI_PASSWORD;
+static const char *mqttHost = IOT_CONFIG_MQTT_SERVER;
+static const char *mqttUser = IOT_CONFIG_MQTT_USER;
+static const char *mqttPass = IOT_CONFIG_MQTT_PASS;
+static const char *mqttCid = IOT_CONFIG_MQTT_CLIENTID;
+static const char *sensorTopic = IOT_CONFIG_MQTT_SENSOR_TOPIC;
 static const int port = 1883;
 
 char willTopic[40];
+const byte incomingBufferSize = 40;
+char incomingBuffer[incomingBufferSize];
+bool newData = false;
 
 // Memory allocated for the sample's variables and structures.
 static WiFiClient wifi_client;
@@ -69,7 +72,7 @@ static void initializeTime()
   Serial.println("done!");
 }
 
-static char* getCurrentLocalTimeString()
+static char *getCurrentLocalTimeString()
 {
   time_t now = time(NULL);
   return ctime(&now);
@@ -81,7 +84,7 @@ static void printCurrentTime()
   Serial.print(getCurrentLocalTimeString());
 }
 
-void receivedCallback(char* topic, byte* payload, unsigned int length)
+void receivedCallback(char *topic, byte *payload, unsigned int length)
 {
   Serial.print("Received [");
   Serial.print(topic);
@@ -108,7 +111,7 @@ static int connectToMqtt()
     Serial.print("MQTT connecting ... ");
 
     if (mqtt_client.connect(mqttCid, mqttUser, mqttPass,
-      willTopic, 0, false, "offline"))
+                            willTopic, 0, false, "offline"))
     {
       Serial.println("connected.");
     }
@@ -141,18 +144,64 @@ static void establishConnection()
   digitalWrite(LED_PIN, LOW);
 }
 
-static void sendTelemetry(const char* topic, const char* payload)
+static void sendTelemetry(const char *topic, const char *payload)
 {
+  char destinationTopic[40];
+  sprintf(destinationTopic, "%s/%s", sensorTopic, topic);
   digitalWrite(LED_PIN, HIGH);
   Serial.print(millis());
   Serial.printf(" Sending telemetry to %s . . . ", topic);
-  mqtt_client.publish(topic, payload, false);
+  mqtt_client.publish(destinationTopic, payload, false);
   Serial.println("OK");
   delay(100);
   digitalWrite(LED_PIN, LOW);
 }
 
 // Read telemetry via serial
+void receiveTelemetry()
+{
+  static byte ndx = 0;
+  char endMarker = '\0'; // Read til we get a NULL
+  char rc;
+
+  while (Serial.available() > 0 && newData == false)
+  {
+    rc = Serial.read();
+
+    if (rc != endMarker)
+    {
+      incomingBuffer[ndx] = rc;
+      ndx++;
+      if (ndx >= incomingBufferSize)
+      {
+        ndx = incomingBufferSize - 1;
+      }
+    }
+    else
+    {
+      incomingBuffer[ndx] = '\0'; // terminate the string
+      ndx = 0;
+      newData = true;
+    }
+  }
+
+  if (newData) {
+    // We have some telemetry in JSON format
+    // so send it as-is
+    Serial.println(incomingBuffer);
+    StaticJsonDocument<40> doc;
+    DeserializationError error = deserializeJson(doc, incomingBuffer);
+    // Test if parsing succeeds.
+    if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.f_str());
+      newData = false;
+      return;
+    }
+    sendTelemetry(doc["sensor"], doc["value"]);
+    newData = false;
+  }
+}
 
 // Arduino setup and loop main functions.
 
@@ -166,19 +215,14 @@ void setup()
 
 void loop()
 {
-  if (millis() > next_telemetry_send_time_ms)
+  // Check if connected, reconnect if needed.
+  if (!mqtt_client.connected())
   {
-    // Check if connected, reconnect if needed.
-    if (!mqtt_client.connected())
-    {
-      establishConnection();
-    }
-
-    sendTelemetry("sensors/home/study/temperature", "test");
-    sendTelemetry("sensors/home/study/humidity", "test");
-    sendTelemetry("sensors/home/study/movement", "test");
-    next_telemetry_send_time_ms = millis() + TELEMETRY_FREQUENCY_MILLISECS;
+    establishConnection();
   }
+  
+  // Process any incoming telemetry
+  receiveTelemetry();
 
   // MQTT loop must be called to process Device-to-Cloud and Cloud-to-Device.
   mqtt_client.loop();
