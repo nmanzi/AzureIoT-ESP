@@ -27,14 +27,10 @@ static const char *sensorTopic = IOT_CONFIG_MQTT_SENSOR_TOPIC;
 static const int port = 1883;
 
 char willTopic[40];
-const byte incomingBufferSize = 40;
-char incomingBuffer[incomingBufferSize];
-bool newData = false;
 
 // Memory allocated for the sample's variables and structures.
 static WiFiClient wifi_client;
 static PubSubClient mqtt_client(wifi_client);
-static unsigned long next_telemetry_send_time_ms = 0;
 
 // Auxiliary functions
 
@@ -158,48 +154,28 @@ static void sendTelemetry(const char *topic, const char *payload)
 }
 
 // Read telemetry via serial
-void receiveTelemetry()
+void sendAndReceiveTelemetry()
 {
-  static byte ndx = 0;
-  char endMarker = '\0'; // Read til we get a NULL
-  char rc;
-
-  while (Serial.available() > 0 && newData == false)
+  DynamicJsonDocument doc(200);
+  DeserializationError error;
+  if (Serial.available() > 0)
   {
-    rc = Serial.read();
-
-    if (rc != endMarker)
-    {
-      incomingBuffer[ndx] = rc;
-      ndx++;
-      if (ndx >= incomingBufferSize)
-      {
-        ndx = incomingBufferSize - 1;
-      }
-    }
-    else
-    {
-      incomingBuffer[ndx] = '\0'; // terminate the string
-      ndx = 0;
-      newData = true;
-    }
+    error = deserializeJson(doc, Serial);
+    // Test if parsing succeeds.
   }
 
-  if (newData) {
-    // We have some telemetry in JSON format
-    // so send it as-is
-    Serial.println(incomingBuffer);
-    StaticJsonDocument<40> doc;
-    DeserializationError error = deserializeJson(doc, incomingBuffer);
-    // Test if parsing succeeds.
-    if (error) {
-      Serial.print(F("deserializeJson() failed: "));
-      Serial.println(error.f_str());
-      newData = false;
-      return;
+  if (error == DeserializationError::Ok)
+  {
+    JsonObject documentRoot = doc.as<JsonObject>();
+    for (JsonPair keyValue : documentRoot)
+    {
+      DynamicJsonDocument sensorReading(50);
+      char sensorJson[50];
+      sensorReading["sensor"] = keyValue.key().c_str();
+      sensorReading["value"] = keyValue.value();
+      serializeJson(sensorReading, sensorJson);
+      sendTelemetry(keyValue.key().c_str(), sensorJson);
     }
-    sendTelemetry(doc["sensor"], doc["value"]);
-    newData = false;
   }
 }
 
@@ -220,11 +196,10 @@ void loop()
   {
     establishConnection();
   }
-  
+
   // Process any incoming telemetry
-  receiveTelemetry();
+  sendAndReceiveTelemetry();
 
   // MQTT loop must be called to process Device-to-Cloud and Cloud-to-Device.
   mqtt_client.loop();
-  delay(500);
 }
